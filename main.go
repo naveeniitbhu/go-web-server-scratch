@@ -22,28 +22,52 @@ func main() {
 	conn, err := l.Accept()
 
 	if err != nil {
-		fmt.Println("Error acepting connection: ", err.Error())
+		fmt.Println("Error accepting connection: ", err.Error())
 		os.Exit(1)
 	}	
 	fmt.Println("Accept connection successfull")
+
+	reader := bufio.NewReader(conn)
+	request, err := reader.ReadString('\n')
+	// ReadString('\n') reads until the first \n, so you get just the request 
+	// line: "GET /echo/abc HTTP/1.1\r\n"
+
+	if err != nil {
+		fmt.Println("Error reading request:", err)
+		return
+	}
+
+	fmt.Printf("Received request: %s", request)
+
+	fullUrl := strings.Split(request, " ")[1]
+	fmt.Printf("Url Path: %q\n", fullUrl)
+
+	if fullUrl == "/" {
+		conn.Write([]byte("HTTP/1.1 200 OK\r\n\r\n"))	
+		return
+	}
+
+	urlParts := strings.Split(fullUrl, "/")
+	fmt.Printf("Url Parts: %q\n", urlParts)
+
+	if len(urlParts) == 2 {
+		conn.Write([]byte("HTTP/1.1 404 Not Found\r\n\r\n"))
+		return
+	}
+
+	body := urlParts[len(urlParts)-1]
+	contentLength := len(body)
+	fmt.Println(body, contentLength)
+
+	response := fmt.Sprintf("HTTP/1.1 200 OK\r\nContent-Type: text/plain\r\nContent-Length: %d\r\n\r\n%s", contentLength, body)
+
+	conn.Write([]byte(response))
+}
+
+
 	// response := "HTTP/1.1 200 OK\r\n" +
   //          "Content-Type: text/plain\r\n" +
   //          "Content-Length: 13\r\n" +
   //          "\r\n" +
   //          "Hello, World!"
 	// conn.Write([]byte(response))
-	reader := bufio.NewReader(conn)
-	request, err := reader.ReadString('\n')
-	if err != nil {
-		fmt.Println("Error reading request:", err)
-		return
-	}
-	fmt.Printf("Received request: %s", request)
-	url := strings.Split(request, " ")[1]
-	fmt.Printf("Url Path: %s\n", url)
-	if url != "/" {
-		conn.Write([]byte("HTTP/1.1 404 Not Found\r\n\r\n"))
-	} else {
-		conn.Write([]byte("HTTP/1.1 200 OK\r\n\r\n"))
-	}
-}
