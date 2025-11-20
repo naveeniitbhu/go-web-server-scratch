@@ -38,20 +38,18 @@ func handleConn(conn net.Conn) {
 
 	reader := bufio.NewReader(conn)
 	request, err := reader.ReadString('\n')
-	// ReadString('\n') reads until the first \n, so you get just the request 
-	// line: "GET /echo/abc HTTP/1.1\r\n"
 
 	if err != nil {
 		fmt.Println("Error reading request:", err)
 		return
 	}
 
-	fmt.Printf("Received request: %s", request)
 	requestArray := strings.Split(request, " ")
-	fullUrl := requestArray[1]
+	// fullUrl := requestArray[1]
 	reqType := requestArray[0]
-	fmt.Printf("Url Path: %q\n", fullUrl)
-	fmt.Printf("Request type: %q\n", reqType)
+
+	fmt.Printf("Request: %s", request)
+	// fmt.Printf("Url: %q\n", fullUrl)
 
 	baseDir = "."
 	args := os.Args
@@ -74,7 +72,6 @@ func handleConn(conn net.Conn) {
 			break
 		}
 		line = strings.TrimRight(line, "\r\n")
-		// Spit header into key:value pair
 		parts := strings.SplitN(line, ":",2)
 		if len(parts) != 2 {
 			continue
@@ -83,80 +80,14 @@ func handleConn(conn net.Conn) {
 		value := strings.TrimSpace(parts[1])
 		headers[key] = value
 	}
-	fmt.Println("Remaining headers:\n", headers)
+	fmt.Println("Headers:\n", headers)
 
 	if reqType == "POST" {
 		handlePost(conn, requestArray, headers, reader)
 		return
 	}
 
-	if fullUrl == "/" {
-		conn.Write([]byte("HTTP/1.1 200 OK\r\n\r\n"))	
-		return
-	}
-
-	urlParts := strings.Split(fullUrl, "/")
-	fmt.Printf("Url Parts: %q\n", urlParts)
-
-	if urlParts[1] == "echo" {
-		body:= ""
-		if len(urlParts) != 2 {
-			body = urlParts[len(urlParts)-1]
-		}
-		contentLength := len(body)
-		fmt.Println(body, contentLength)
-		response := fmt.Sprintf("HTTP/1.1 200 OK\r\nContent-Type: text/plain\r\nContent-Length: %d\r\n\r\n%s", contentLength, body)
-		conn.Write([]byte(response))
-		return
-	}
-
-	if urlParts[1] == "files" {
-		if len(urlParts) < 3 {
-			conn.Write([]byte("HTTP/1.1 400 Bad Request\r\n\r\n"))
-			return
-		}
-		fmt.Println("Base-dir", baseDir)
-		filePath := baseDir + urlParts[2]
-		isFilePresent := fileExists(filePath)
-		if !isFilePresent {
-			conn.Write([]byte("HTTP/1.1 404 Not Found\r\n\r\n"))
-			return
-		}
-		file, err := os.Open(filePath)
-		if err != nil {
-			conn.Write([]byte("HTTP/1.1 500 Internal Server Error\r\n\r\n"))
-			return
-		}
-
-		fileInfo, _ := file.Stat()
-		fileContent, err := io.ReadAll(file)
-
-		if err != nil {
-			conn.Write([]byte("HTTP/1.1 500 Internal Server Error\r\n\r\n"))
-			return
-		}
-
-		fmt.Println("File-Content", fileContent)
-
-		fileSize := fileInfo.Size()
-		response := fmt.Sprintf("HTTP/1.1 200 OK\r\nContent-Type: application/octet-stream\r\nContent-Length: %d\r\n\r\n%s", fileSize, fileContent)
-		conn.Write([]byte(response))
-		return
-	}
-
-	if urlParts[1] == "user-agent" {
-		userAgent := headers["user-agent"]
-		body := userAgent
-
-		resp := fmt.Sprintf("HTTP/1.1 200 OK\r\n"+
-			"Content-Type: text/plain\r\n"+
-			"Content-Length: %d\r\n"+
-			"\r\n%s", len(body), body)
-
-		_, _ = conn.Write([]byte(resp))
-		return
-	}
-	conn.Write([]byte("HTTP/1.1 404 Not Found\r\n\r\n"))
+	handleGet(conn, requestArray, headers)
 }
 
 func fileExists(path string) bool {
@@ -213,4 +144,90 @@ func handlePost(conn net.Conn,requestArray []string, headers map[string]string, 
 	// Success — respond (201 Created or 200 OK)
 	conn.Write([]byte("HTTP/1.1 201 Created\r\nContent-Length: 0\r\n\r\n"))
 
+}
+
+func handleGet(conn net.Conn,requestArray []string, headers map[string]string) {
+	fullUrl := requestArray[1]
+	fmt.Println("GET url:", fullUrl)
+	fmt.Println("GET headers:", headers)
+	if fullUrl == "/" {
+			conn.Write([]byte("HTTP/1.1 200 OK\r\n\r\n"))	
+			return
+		}
+
+	urlParts := strings.Split(fullUrl, "/")
+	fmt.Printf("Url Parts: %q\n", urlParts)
+
+	if urlParts[1] == "echo" {
+		body:= ""
+		if len(urlParts) != 2 {
+			body = urlParts[len(urlParts)-1]
+		}
+		if encodingType, ok := headers["accept-encoding"]; ok {
+			if encodingType == "gzip" {	
+				response := "HTTP/1.1 200 OK\r\nContent-Type: text/plain\r\n"
+				response += "Content-Encoding: gzip\r\n"
+				response += fmt.Sprintf("Content-Length: %d\r\n\r\n", len(body))
+				response += body
+				conn.Write([]byte(response))
+				return
+			}
+		}
+		contentLength := len(body)
+		fmt.Println("Body", contentLength)
+		fmt.Println("Content length", contentLength)
+		response := "HTTP/1.1 200 OK\r\nContent-Type: text/plain\r\n" +
+								fmt.Sprintf("Content-Length: %d\r\n\r\n", contentLength) + 
+								body
+		conn.Write([]byte(response))
+		return
+	}
+
+	if urlParts[1] == "files" {
+		if len(urlParts) < 3 {
+			conn.Write([]byte("HTTP/1.1 400 Bad Request\r\n\r\n"))
+			return
+		}
+		fmt.Println("Base-dir", baseDir)
+		filePath := baseDir + urlParts[2]
+		isFilePresent := fileExists(filePath)
+		if !isFilePresent {
+			conn.Write([]byte("HTTP/1.1 404 Not Found\r\n\r\n"))
+			return
+		}
+		file, err := os.Open(filePath)
+		if err != nil {
+			conn.Write([]byte("HTTP/1.1 500 Internal Server Error\r\n\r\n"))
+			return
+		}
+
+		fileInfo, _ := file.Stat()
+		fileContent, err := io.ReadAll(file)
+
+		if err != nil {
+			conn.Write([]byte("HTTP/1.1 500 Internal Server Error\r\n\r\n"))
+			return
+		}
+
+		fmt.Println("File-Content", fileContent)
+
+		fileSize := fileInfo.Size()
+		response := fmt.Sprintf("HTTP/1.1 200 OK\r\nContent-Type: application/octet-stream\r\nContent-Length: %d\r\n\r\n%s", fileSize, fileContent)
+		conn.Write([]byte(response))
+		return
+	}
+
+	if urlParts[1] == "user-agent" {
+		userAgent := headers["user-agent"]
+		body := userAgent
+
+		resp := fmt.Sprintf("HTTP/1.1 200 OK\r\n"+
+			"Content-Type: text/plain\r\n"+
+			"Content-Length: %d\r\n"+
+			"\r\n%s", len(body), body)
+
+		_, _ = conn.Write([]byte(resp))
+		return
+	}
+	conn.Write([]byte("HTTP/1.1 404 Not Found\r\n\r\n"))
 }
