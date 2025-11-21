@@ -36,22 +36,13 @@ func main() {
 }
 
 func handleConn(conn net.Conn) {
-	defer conn.Close()
+
+	defer func() {
+			conn.Close()
+			fmt.Println("closed connection")
+	}()
 
 	reader := bufio.NewReader(conn)
-	request, err := reader.ReadString('\n')
-
-	if err != nil {
-		fmt.Println("Error reading request:", err)
-		return
-	}
-
-	requestArray := strings.Split(request, " ")
-	// fullUrl := requestArray[1]
-	reqType := requestArray[0]
-
-	fmt.Printf("Request: %s", request)
-	// fmt.Printf("Url: %q\n", fullUrl)
 
 	baseDir = "."
 	args := os.Args
@@ -62,34 +53,72 @@ func handleConn(conn net.Conn) {
 		}
 	}
 
-	headers := make(map[string]string)
-	for {
-		line, err := reader.ReadString('\n')
+	for  {
+		requestLine, err := reader.ReadString('\n')
 		if err != nil {
-			fmt.Println("error reading header:", err)
+			if err == io.EOF {
+				// client closed connection
+				return
+			}
+			fmt.Println("Error reading request line:", err)
 			return
 		}
-		// End of headers on blank line
-		if line == "\r\n" || line == "\n"{
-			break
-		}
-		line = strings.TrimRight(line, "\r\n")
-		parts := strings.SplitN(line, ":",2)
-		if len(parts) != 2 {
+		if requestLine == "\r\n" || requestLine == "\n" {
 			continue
 		}
-		key := strings.ToLower(strings.TrimSpace(parts[0]))
-		value := strings.TrimSpace(parts[1])
-		headers[key] = value
-	}
-	fmt.Println("Headers:\n", headers)
 
-	if reqType == "POST" {
-		handlePost(conn, requestArray, headers, reader)
-		return
-	}
+		requestArray := strings.Split(requestLine, " ")
+		if len(requestArray) < 2 {
+			conn.Write([]byte("HTTP/1.1 400 Bad Request\r\nConnection: close\r\nContent-length: 0\r\n\r\n"))
+			return
+		}
+		reqType := requestArray[0]
+		fullUrl := requestArray[1]
 
-	handleGet(conn, requestArray, headers)
+		fmt.Println("Request line:", requestLine)
+
+		headers := make(map[string]string)
+		for {
+			line, err := reader.ReadString('\n')
+			if err != nil {
+				fmt.Println("error reading header:", err)
+				return
+			}
+			// End of headers on blank line
+			if line == "\r\n" || line == "\n"{
+				break
+			}
+			line = strings.TrimRight(line, "\r\n")
+			parts := strings.SplitN(line, ":",2)
+			if len(parts) != 2 {
+				continue
+			}
+			key := strings.ToLower(strings.TrimSpace(parts[0]))
+			value := strings.TrimSpace(parts[1])
+			headers[key] = value
+		}
+		fmt.Println("Headers:\n", headers)
+
+		reqArr := []string{"", fullUrl}
+		if reqType == "POST" {
+			handlePost(conn, reqArr, headers, reader)
+		} else {
+			handleGet(conn, reqArr, headers)
+		}
+
+		connHdr := ""
+
+		if v,ok := headers["connection"]; ok {
+			connHdr = strings.ToLower(v)
+		}
+
+		if connHdr == "close" {
+			// client asked to close
+			fmt.Println("Closed connection")
+			conn.Write([]byte("HTTP/1.1 200 OK\r\nConnection: close\r\n\r\n"))
+			return
+		}
+	}
 }
 
 func fileExists(path string) bool {
@@ -143,8 +172,10 @@ func handlePost(conn net.Conn,requestArray []string, headers map[string]string, 
     return
 	}
 
-	// Success — respond (201 Created or 200 OK)
-	conn.Write([]byte("HTTP/1.1 201 Created\r\nContent-Length: 0\r\n\r\n"))
+	connHdr := includeConnectionClose(headers)
+	response := fmt.Sprintf("HTTP/1.1 201 Created\r\n"+
+		"%s"+"Content-Length: 0\r\n\r\n",connHdr)
+	conn.Write([]byte(response))
 
 }
 
@@ -153,9 +184,12 @@ func handleGet(conn net.Conn,requestArray []string, headers map[string]string) {
 	fmt.Println("GET url:", fullUrl)
 	fmt.Println("GET headers:", headers)
 	if fullUrl == "/" {
-			conn.Write([]byte("HTTP/1.1 200 OK\r\n\r\n"))	
-			return
-		}
+		connHdr := includeConnectionClose(headers)
+		response := fmt.Sprintf("HTTP/1.1 200 OK\r\n"+
+		"%s\r\n", connHdr)
+		conn.Write([]byte(response))	
+		return
+	}
 
 	urlParts := strings.Split(fullUrl, "/")
 	fmt.Printf("Url Parts: %q\n", urlParts)
@@ -197,9 +231,12 @@ func handleGet(conn net.Conn,requestArray []string, headers map[string]string) {
 		contentLength := len(body)
 		fmt.Println("Body", contentLength)
 		fmt.Println("Content length", contentLength)
-		response := "HTTP/1.1 200 OK\r\nContent-Type: text/plain\r\n" +
-								fmt.Sprintf("Content-Length: %d\r\n\r\n", contentLength) + 
-								body
+		connHdr := includeConnectionClose(headers)
+		response := fmt.Sprintf("HTTP/1.1 200 OK\r\n"+
+			"Content-Type: text/plain\r\n"+
+			"%s"+
+			"Content-Length: %d\r\n\r\n%s",
+			connHdr,contentLength, body)
 		conn.Write([]byte(response))
 		return
 	}
@@ -233,7 +270,12 @@ func handleGet(conn net.Conn,requestArray []string, headers map[string]string) {
 		fmt.Println("File-Content", fileContent)
 
 		fileSize := fileInfo.Size()
-		response := fmt.Sprintf("HTTP/1.1 200 OK\r\nContent-Type: application/octet-stream\r\nContent-Length: %d\r\n\r\n%s", fileSize, fileContent)
+		connHdr := includeConnectionClose(headers)
+		response := fmt.Sprintf("HTTP/1.1 200 OK\r\n"+
+			"Content-Type: application/octet-stream\r\n"+
+			"%s"+
+			"Content-Length: %d\r\n\r\n%s",
+			connHdr,fileSize, fileContent)
 		conn.Write([]byte(response))
 		return
 	}
@@ -242,10 +284,13 @@ func handleGet(conn net.Conn,requestArray []string, headers map[string]string) {
 		userAgent := headers["user-agent"]
 		body := userAgent
 
+		connHdr := includeConnectionClose(headers)
 		resp := fmt.Sprintf("HTTP/1.1 200 OK\r\n"+
 			"Content-Type: text/plain\r\n"+
+			"%s"+
 			"Content-Length: %d\r\n"+
-			"\r\n%s", len(body), body)
+			"\r\n%s",
+			connHdr, len(body), body)
 
 		_, _ = conn.Write([]byte(resp))
 		return
@@ -267,4 +312,11 @@ func gzipString(s string)([]byte, error) {
 	}
 
 	return buf.Bytes(), nil
+}
+
+func includeConnectionClose(headers map[string]string) string {
+	if v,ok := headers["connection"]; ok && strings.ToLower(strings.TrimSpace(v)) == "close" {
+		return "Connection: close\r\n"
+	}
+	return ""
 }
