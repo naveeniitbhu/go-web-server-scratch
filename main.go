@@ -2,6 +2,8 @@ package main
 
 import (
 	"bufio"
+	"bytes"
+	"compress/gzip"
 	"errors"
 	"fmt"
 	"io"
@@ -163,15 +165,34 @@ func handleGet(conn net.Conn,requestArray []string, headers map[string]string) {
 		if len(urlParts) != 2 {
 			body = urlParts[len(urlParts)-1]
 		}
+		fmt.Println("str:", body)
 		if encodingType, ok := headers["accept-encoding"]; ok {
-			if encodingType == "gzip" {	
-				response := "HTTP/1.1 200 OK\r\nContent-Type: text/plain\r\n"
-				response += "Content-Encoding: gzip\r\n"
-				response += fmt.Sprintf("Content-Length: %d\r\n\r\n", len(body))
-				response += body
-				conn.Write([]byte(response))
+			fmt.Println("Encoding-string:", encodingType)
+			encodingSlice := strings.Split(encodingType, ",")
+			fmt.Println("Encodings:", encodingSlice)
+			gzbody, err := gzipString(body)
+			if err != nil {
+				conn.Write([]byte("HTTP/1.1 500 Internal Server Error\r\n\r\n"))
 				return
 			}
+			fmt.Println("Gzbody:", gzbody)
+
+			for _, encoding := range encodingSlice {
+				if strings.TrimSpace(encoding) == "gzip" {	
+					responseHeader := "HTTP/1.1 200 OK\r\n" +
+											"Content-Type: text/plain\r\n" +
+											"Content-Encoding: gzip\r\n" +
+											fmt.Sprintf("Content-Length: %d\r\n\r\n", len(gzbody))
+					if _, err := conn.Write([]byte(responseHeader)); err != nil {
+						return
+					}
+					if _, err := conn.Write(gzbody); err != nil {
+						// optionally log
+					}
+					return
+				}
+			}
+			
 		}
 		contentLength := len(body)
 		fmt.Println("Body", contentLength)
@@ -230,4 +251,20 @@ func handleGet(conn net.Conn,requestArray []string, headers map[string]string) {
 		return
 	}
 	conn.Write([]byte("HTTP/1.1 404 Not Found\r\n\r\n"))
+}
+
+func gzipString(s string)([]byte, error) {
+	var buf bytes.Buffer
+	gz := gzip.NewWriter(&buf)
+
+	_, err :=  gz.Write([]byte(s))
+	if err != nil {
+		return nil, err
+	}
+
+	if err := gz.Close(); err != nil {
+		return nil, err
+	}
+
+	return buf.Bytes(), nil
 }
